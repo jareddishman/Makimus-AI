@@ -57,6 +57,18 @@ python Makimus-AI.py
 | onnxruntime-gpu | 1.23.2 |
 
 ---
+## 🧠 Model
+
+This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
+
+| Property | Value |
+|---|---|
+| Model | ViT-L-14 |
+| Pretrained on | laion2b_s32b_b82k |
+| Library | open_clip_torch |
+
+---
+
 
 ## 💡 Features
 
