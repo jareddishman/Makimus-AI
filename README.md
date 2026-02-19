@@ -74,6 +74,7 @@ This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 
 - 🔍 Natural language image search
 - 🖼️ Image-to-image search — find visually similar images
+- 🔄 Search while indexing — no need to wait for indexing to finish
 - ⚡ GPU accelerated (CUDA, Apple MPS, DirectML)
 - 🧠 Auto-detects VRAM and adjusts batch size
 - 📦 ONNX optimization for faster inference
