@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
 Pillow==12.0.0
 numpy==2.2.6
 torch==2.5.1+cu121
