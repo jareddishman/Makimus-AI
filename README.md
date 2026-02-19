@@ -87,3 +87,13 @@ This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 - First run will download the AI model (~1GB) automatically
 - After indexing your folder, results are cached for instant future searches
 - CPU mode works but is significantly slower
+
+---
+
+## 🤝 Contributing
+
+This project is not open for direct contributions.
+If you'd like to improve it, feel free to **fork** the repo 
+and build your own version!
+
+[![Fork](https://img.shields.io/github/forks/Ubaida-M-Yusuf/Makimus-AI?style=social)](https://github.com/Ubaida-M-Yusuf/Makimus-AI/fork)
