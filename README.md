@@ -1,5 +1,4 @@
 # 🦉 Makimus-AI - AI Image Search
-
 Search your entire image library using **natural language or an image** — just type what you're looking for or drop an image, and Makimus-AI finds visually similar results instantly using AI.
 
 > Example: type *"Girl wearing a red armor"* or *"dog playing in grass"* — or just **Use an image** to find visually similar ones from your folders.
@@ -9,7 +8,6 @@ Search your entire image library using **natural language or an image** — just
 ---
 
 ## ⚙️ Requirements
-
 - Python 3.10+
 - NVIDIA GPU with CUDA 12.1 (recommended)
 - Windows / Linux / macOS
@@ -18,21 +16,15 @@ Search your entire image library using **natural language or an image** — just
 
 ## 🚀 Installation
 
-**Windows — easy option:**
-
-Double click `Install.bat` to install and launch automatically
-
-Or double click `Run.bat` if already installed
-
----
-
-### Manual Installation
-
 ### 1. Clone the repo
 ```bash
 git clone https://github.com/Ubaida-M-Yusuf/Makimus-AI.git
 cd Makimus-AI
 ```
+
+**Windows — easy option:** double click `Install.bat` to install and launch automatically, then skip the steps below.
+
+---
 
 ### 2. Create a virtual environment
 ```bash
@@ -56,28 +48,29 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** requirements.txt installs PyTorch for CUDA 12.1+. 
-> If you have CUDA 11.8 or older, visit 
-> [pytorch.org](https://pytorch.org/get-started/locally) 
+> **Note:** requirements.txt installs PyTorch for CUDA 12.1+.
+> If you have CUDA older than 12.1, visit
+> [pytorch.org](https://pytorch.org/get-started/locally)
 > to get the correct version for your system.
 
 ---
 
 ## ▶️ Run
 
-> **Important:** Make sure to activate your virtual environment before running!
+> **Important:** Activate your virtual environment before running!
 > ```bash
 > source venv/Scripts/activate  # Windows
 > source venv/bin/activate       # Mac/Linux
 > ```
-
+```bash
 python Makimus-AI.py
+```
 
-Or double click `Run.bat`
+Windows users can also double click `Run.bat`
+
 ---
 
 ## 📦 Dependencies
-
 | Package | Version |
 |---|---|
 | Pillow | 12.0.0 |
@@ -88,8 +81,8 @@ Or double click `Run.bat`
 | onnxruntime-gpu | 1.23.2 |
 
 ---
-## 🧠 Model
 
+## 🧠 Model
 This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 
 | Property | Value |
@@ -100,9 +93,7 @@ This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 
 ---
 
-
 ## 💡 Features
-
 - 🔍 Natural language image search
 - 🖼️ Image-to-image search — find visually similar images
 - 🔄 Search while indexing — no need to wait for indexing to finish
@@ -115,7 +106,6 @@ This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 ---
 
 ## 📝 Notes
-
 - First run will download the AI model (~1GB) automatically
 - After indexing your folder, results are cached for instant future searches
 - CPU mode works but is significantly slower
@@ -123,9 +113,7 @@ This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 ---
 
 ## 🤝 Contributing
-
 This project is not open for direct contributions.
-If you'd like to improve it, feel free to **fork** the repo 
-and build your own version!
+If you'd like to improve it, feel free to **fork** the repo and build your own version!
 
 [![Fork](https://img.shields.io/github/forks/Ubaida-M-Yusuf/Makimus-AI?style=social)](https://github.com/Ubaida-M-Yusuf/Makimus-AI/fork)
