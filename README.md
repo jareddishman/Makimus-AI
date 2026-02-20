@@ -1,4 +1,8 @@
 # 🦉 Makimus-AI - AI Image Search
+
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+
+
 Search your entire image library using **natural language or an image** — just type what you're looking for or drop an image, and Makimus-AI finds visually similar results instantly using AI.
 
 > Example: type *"Girl wearing a red armor"* or *"dog playing in grass"* — or just **Use an image** to find visually similar ones from your folders.
