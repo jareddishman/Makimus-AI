@@ -101,6 +101,8 @@ BATCH_SIZE = determine_batch_size()
 print(f"[CONFIG] Selected Batch Size: {BATCH_SIZE}")
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
+VIDEO_EXTS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v")
+VIDEO_FRAME_INTERVAL = 5  # seconds between sampled frames
 TOP_RESULTS = 30
 MIN_SCORE_THRESHOLD = 0.20
 THUMBNAIL_SIZE = (180, 180)
@@ -449,6 +451,16 @@ class ImageSearchApp:
         self.selected_images = set()
         self.excluded_folders = set()
 
+        # Video index — parallel to image index
+        self.video_paths = []         # list of (rel_video_path_str, timestamp_float)
+        self.video_embeddings = None  # numpy array (M, 512)
+        self.video_cache_file = None
+        self._pending_video_refresh = False
+
+        # Result type filter (set in build_ui)
+        self.show_images_var = None
+        self.show_videos_var = None
+
         self.clip_model = None
         self.model_loading = False
         
@@ -488,6 +500,10 @@ class ImageSearchApp:
         pretrained_simple = "LAION2B" if "laion2b" in MODEL_PRETRAINED.lower() else MODEL_PRETRAINED.upper()
         cache_name = f".clip_cache_{MODEL_NAME}_{pretrained_simple}.pkl"
         return [cache_name]
+
+    def get_video_cache_filename(self):
+        pretrained_simple = "LAION2B" if "laion2b" in MODEL_PRETRAINED.lower() else MODEL_PRETRAINED.upper()
+        return f".clip_cache_videos_{MODEL_NAME}_{pretrained_simple}.pkl"
 
     def get_exclusions_path(self):
         if not self.folder:
@@ -639,7 +655,10 @@ class ImageSearchApp:
         
         self.btn_refresh = ttk.Button(top, text="Refresh", command=self.on_force_reindex, width=10)
         self.btn_refresh.pack(side="left", padx=4)
-        
+
+        self.btn_index_videos = ttk.Button(top, text="Index Videos", command=self.on_index_videos_click, width=13)
+        self.btn_index_videos.pack(side="left", padx=4)
+
         self.btn_clear = ttk.Button(top, text="Clear Cache", command=self.on_delete_cache, width=12, style="Danger.TButton")
         self.btn_clear.pack(side="left", padx=4)
         
@@ -689,6 +708,16 @@ class ImageSearchApp:
         ttk.Button(ctrl_frame, text="Copy", command=self.on_copy_click, width=8).pack(side="left", padx=4)
         ttk.Button(ctrl_frame, text="Move", command=self.on_move_click, width=8, style="Accent.TButton").pack(side="left", padx=4)
         ttk.Button(ctrl_frame, text="Delete", command=self.on_delete_click, width=8, style="Danger.TButton").pack(side="left", padx=4)
+
+        ttk.Separator(ctrl_frame, orient="vertical").pack(side="left", fill="y", padx=(14, 8), pady=4)
+        self.show_images_var = tk.BooleanVar(value=True)
+        self.show_videos_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(ctrl_frame, text="Images", variable=self.show_images_var,
+                       bg=PANEL_BG, fg=FG, selectcolor=BG, activebackground=PANEL_BG,
+                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
+        tk.Checkbutton(ctrl_frame, text="Videos", variable=self.show_videos_var,
+                       bg=PANEL_BG, fg=FG, selectcolor=BG, activebackground=PANEL_BG,
+                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
 
         self.progress = ttk.Progressbar(self.root, mode='determinate')
         self.progress.pack(fill="x", padx=10, pady=6)
@@ -838,6 +867,9 @@ class ImageSearchApp:
         self.image_embeddings = None
         self.folder = None
         self.cache_file = None
+        self.video_paths = []
+        self.video_embeddings = None
+        self.video_cache_file = None
         self.clear_results()
         self.update_stats()
         
@@ -863,6 +895,12 @@ class ImageSearchApp:
         if found_cache:
             self.cache_file = found_cache
             self.load_cache_data(found_cache)
+            # Also check for video cache
+            video_cache_name = self.get_video_cache_filename()
+            video_cache_path = os.path.join(folder, video_cache_name)
+            if os.path.exists(video_cache_path):
+                self.load_video_cache_data(video_cache_path)
+                safe_print(f"[VCACHE] Auto-loaded: {video_cache_name}")
             query = self.query_entry.get().strip()
             if query:
                 self.root.after(500, self.do_search)
@@ -906,6 +944,26 @@ class ImageSearchApp:
             messagebox.showerror("Error", f"Load failed: {e}")
             self.update_status("Cache load failed", "red")
 
+    def load_video_cache_data(self, cache_path):
+        try:
+            safe_print(f"[VCACHE] Loading: {cache_path}")
+            with open(cache_path, "rb") as f:
+                data = pickle.load(f)
+                self.video_paths, self.video_embeddings = data
+
+            if hasattr(self.video_embeddings, 'cpu'):
+                self.video_embeddings = self.video_embeddings.cpu().numpy()
+
+            self.video_cache_file = cache_path
+            self.update_stats()
+            n_videos = len(set(vp for vp, _ in self.video_paths))
+            n_frames = len(self.video_paths)
+            safe_print(f"[VCACHE] Loaded {n_frames:,} frames from {n_videos:,} videos.")
+        except Exception as e:
+            safe_print(f"[VCACHE] Load error: {e}")
+            self.video_paths = []
+            self.video_embeddings = None
+
     def start_indexing(self, mode="full"):
         self.stop_indexing = False
         self.is_stopping = False
@@ -917,7 +975,11 @@ class ImageSearchApp:
             self.index_thread = Thread(target=self.index_all_images, daemon=True)
         elif mode == "refresh":
             self.index_thread = Thread(target=self.refresh_index, daemon=True)
-        
+        elif mode == "video_full":
+            self.index_thread = Thread(target=self.index_all_videos, daemon=True)
+        elif mode == "video_refresh":
+            self.index_thread = Thread(target=self.refresh_video_index, daemon=True)
+
         self.index_thread.start()
 
     def refresh_index(self):
@@ -1119,6 +1181,232 @@ class ImageSearchApp:
         self._save_cache()
         self._handle_stop()
 
+    def _process_video_batch(self, file_list, is_update=False):
+        """Extract frames from videos, encode with CLIP, store (rel_path, timestamp) tuples."""
+        try:
+            import cv2
+        except ImportError:
+            safe_print("[VINDEX ERROR] OpenCV not installed. Run: pip install opencv-python")
+            self.root.after(0, lambda: messagebox.showerror(
+                "Missing Dependency",
+                "OpenCV is required for video indexing.\n\nInstall it with:\n  pip install opencv-python"
+            ))
+            self.is_indexing = False
+            self.is_stopping = False
+            return
+
+        try:
+            total = len(file_list)
+            existing_set = set(self.video_paths) if is_update else set()
+
+            for file_idx, abs_video_path in enumerate(file_list):
+                if self.stop_indexing:
+                    safe_print("\n[VINDEX] Stopping video batch loop.")
+                    break
+
+                rel_video_path = os.path.relpath(abs_video_path, self.folder)
+
+                cap = cv2.VideoCapture(abs_video_path)
+                if not cap.isOpened():
+                    safe_print(f"[VINDEX] Cannot open: {abs_video_path}")
+                    continue
+
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                total_frames_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+                if fps <= 0 or total_frames_count <= 0:
+                    cap.release()
+                    continue
+
+                duration_seconds = total_frames_count / fps
+                frames_to_sample = []
+
+                if duration_seconds < VIDEO_FRAME_INTERVAL:
+                    frames_to_sample.append(duration_seconds / 2.0)
+                else:
+                    t = 0.0
+                    while t < duration_seconds:
+                        frames_to_sample.append(t)
+                        t += VIDEO_FRAME_INTERVAL
+
+                pil_frames = []
+                valid_timestamps = []
+
+                for ts in frames_to_sample:
+                    if self.stop_indexing:
+                        break
+                    if is_update and (rel_video_path, ts) in existing_set:
+                        continue
+
+                    frame_number = int(ts * fps)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                    ret, frame = cap.read()
+                    if not ret:
+                        continue
+
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(frame_rgb)
+                    pil_frames.append(pil_img)
+                    valid_timestamps.append(ts)
+
+                cap.release()
+
+                if not pil_frames or self.stop_indexing:
+                    continue
+
+                for i in range(0, len(pil_frames), BATCH_SIZE):
+                    if self.stop_indexing:
+                        break
+                    batch_imgs = pil_frames[i:i + BATCH_SIZE]
+                    batch_ts = valid_timestamps[i:i + BATCH_SIZE]
+
+                    try:
+                        features = self.clip_model.encode_image_batch(batch_imgs)
+
+                        if features is None or features.size == 0:
+                            continue
+
+                        new_tuples = []
+                        new_features = []
+                        for j, ts in enumerate(batch_ts):
+                            tup = (rel_video_path, ts)
+                            if tup not in existing_set:
+                                new_tuples.append(tup)
+                                new_features.append(features[j])
+                                existing_set.add(tup)
+
+                        if new_tuples:
+                            self.video_paths.extend(new_tuples)
+                            new_arr = np.array(new_features)
+                            if self.video_embeddings is None:
+                                self.video_embeddings = new_arr
+                            else:
+                                self.video_embeddings = np.concatenate([self.video_embeddings, new_arr])
+
+                    except Exception as e:
+                        safe_print(f"[VINDEX ERROR] Encoding failed: {e}")
+
+                    del batch_imgs, batch_ts
+
+                del pil_frames, valid_timestamps
+
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+
+                pct = ((file_idx + 1) / total) * 100
+                n_frames = len(self.video_paths)
+                msg = f"{'Updating' if is_update else 'Indexing'} Videos: {file_idx+1:,}/{total:,} files ({n_frames:,} frames)"
+                self.root.after(0, lambda v=pct, m=msg: self.update_progress(v, m))
+                safe_print(f"\r[VINDEX] {msg}", end='')
+
+            safe_print("")
+
+        finally:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+            gc.collect()
+
+        self._save_video_cache()
+        self._handle_video_stop()
+
+    def index_all_videos(self):
+        if not self.folder or self.clip_model is None:
+            return
+        self.is_indexing = True
+
+        if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
+            if not getattr(self.clip_model, 'onnx_disabled', False):
+                try:
+                    self.clip_model._create_onnx_session()
+                except:
+                    pass
+
+        self.video_paths = []
+        self.video_embeddings = None
+
+        all_videos = []
+        for root_dir, _, files in os.walk(self.folder):
+            if self.stop_indexing:
+                break
+            for f in files:
+                if f.lower().endswith(VIDEO_EXTS):
+                    abs_path = os.path.join(root_dir, f)
+                    rel_path = os.path.relpath(abs_path, self.folder)
+                    if not self._is_excluded(rel_path):
+                        all_videos.append(abs_path)
+
+        if not all_videos:
+            self.is_indexing = False
+            self.root.after(0, lambda: self.update_status("No videos found", "orange"))
+            return
+
+        safe_print(f"[VINDEX] Found {len(all_videos)} video files.")
+        self._process_video_batch(all_videos, is_update=False)
+
+    def refresh_video_index(self):
+        if not self.folder or self.clip_model is None:
+            return
+        self.is_indexing = True
+
+        if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
+            if not getattr(self.clip_model, 'onnx_disabled', False):
+                try:
+                    self.clip_model._create_onnx_session()
+                except:
+                    pass
+
+        safe_print("\n[VSCAN] Scanning folder for video changes...")
+        self.root.after(0, lambda: self.update_status("Scanning for video changes...", "orange"))
+
+        current_disk_videos = set()
+        new_videos_to_add = []
+
+        for root_dir, _, files in os.walk(self.folder):
+            if self.stop_indexing:
+                break
+            for f in files:
+                if f.lower().endswith(VIDEO_EXTS):
+                    abs_path = os.path.join(root_dir, f)
+                    rel_path = os.path.relpath(abs_path, self.folder)
+                    if self._is_excluded(rel_path):
+                        continue
+                    current_disk_videos.add(rel_path)
+                    already_indexed = any(vp == rel_path for vp, _ in self.video_paths)
+                    if not already_indexed:
+                        new_videos_to_add.append(abs_path)
+
+        if self.stop_indexing:
+            self._handle_video_stop()
+            return
+
+        keep_indices = [i for i, (vp, _) in enumerate(self.video_paths) if vp in current_disk_videos]
+        removed_count = len(self.video_paths) - len(keep_indices)
+
+        if removed_count > 0:
+            if self.video_embeddings is not None:
+                self.video_embeddings = self.video_embeddings[keep_indices]
+            self.video_paths = [self.video_paths[i] for i in keep_indices]
+            safe_print(f"[VSCAN] Pruned {removed_count} stale frame entries.")
+
+        if new_videos_to_add:
+            safe_print(f"[VSCAN] Found {len(new_videos_to_add)} new video files.")
+            self._process_video_batch(new_videos_to_add, is_update=True)
+        else:
+            if removed_count > 0:
+                self._save_video_cache()
+            self.is_indexing = False
+            self.is_stopping = False
+            safe_print("[VSCAN] Video index is up to date.")
+            self.root.after(0, lambda: self.update_status("Video index up to date", "green"))
+            self.root.after(0, self.update_stats)
+
     def _save_cache(self):
         """Save cache with RELATIVE paths"""
         if self.image_embeddings is not None and len(self.image_paths) > 0:
@@ -1133,6 +1421,19 @@ class ImageSearchApp:
                 safe_print(f"[CACHE] Saved {len(self.image_paths)} relative paths to {self.cache_file}")
             except Exception as e:
                 safe_print(f"[CACHE] Save Error: {e}")
+
+    def _save_video_cache(self):
+        if self.video_embeddings is not None and len(self.video_paths) > 0:
+            try:
+                temp_file = self.video_cache_file + ".tmp"
+                with open(temp_file, "wb") as f:
+                    pickle.dump((self.video_paths, self.video_embeddings), f)
+                if os.path.exists(self.video_cache_file):
+                    os.remove(self.video_cache_file)
+                os.rename(temp_file, self.video_cache_file)
+                safe_print(f"[VCACHE] Saved {len(self.video_paths):,} frame entries to {self.video_cache_file}")
+            except Exception as e:
+                safe_print(f"[VCACHE] Save Error: {e}")
 
     def _handle_stop(self):
         was_stopped = self.stop_indexing
@@ -1190,24 +1491,88 @@ class ImageSearchApp:
                 if query:
                     self.root.after(500, self.do_search)
         else:
+            # Chain video refresh if pending
+            if getattr(self, '_pending_video_refresh', False):
+                self._pending_video_refresh = False
+                if not self.video_cache_file:
+                    self.video_cache_file = os.path.join(self.folder, self.get_video_cache_filename())
+                self.root.after(200, lambda: self.start_indexing(mode="video_refresh"))
+                return  # messagebox shown after video finishes
             self.root.after(0, lambda: self.update_status("Indexing Complete", "green"))
             self.root.after(0, lambda: messagebox.showinfo("Done", f"Index complete.\nTotal images: {count:,}"))
             query = self.query_entry.get().strip()
             if query:
                 self.root.after(500, self.do_search)
 
+    def _handle_video_stop(self):
+        was_stopped = self.stop_indexing
+        n_frames = len(self.video_paths)
+        n_videos = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
+
+        self.is_indexing = False
+        self.stop_indexing = False
+        self.is_stopping = False
+
+        if self.clip_model and hasattr(self.clip_model, 'model'):
+            import torch
+            try:
+                if not getattr(self.clip_model, 'onnx_disabled', False):
+                    self.clip_model._destroy_onnx_session()
+                original_device = self.clip_model.device
+                self.clip_model.model.cpu()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                gc.collect()
+                self.clip_model.model.to(original_device)
+            except Exception as e:
+                safe_print(f"[VRAM] Video cleanup warning: {e}")
+
+        self.root.after(0, lambda: self.btn_stop.config(text="STOP INDEX"))
+        self.root.after(0, lambda: self.progress.configure(value=0))
+        self.root.after(0, lambda: self.progress_label.config(text=""))
+        self.root.after(0, self.update_stats)
+
+        if was_stopped:
+            msg = f"Stopped. Saved {n_frames:,} frames from {n_videos:,} videos."
+            safe_print(f"[VINDEX] {msg}")
+            self.root.after(0, lambda: self.update_status(msg, DANGER))
+            if self.pending_action:
+                action = self.pending_action
+                self.pending_action = None
+                self.root.after(100, action)
+        else:
+            self.root.after(0, lambda: self.update_status("Video indexing complete", "green"))
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Done", f"Video index complete.\n{n_videos:,} videos | {n_frames:,} frames"
+            ))
+            query = self.query_entry.get().strip()
+            if query:
+                self.root.after(500, self.do_search)
+
     def delete_cache(self):
         if not self.folder: return
-        if not messagebox.askyesno("Clear?", "Delete cache file and re-index everything?"): return
-        
+        if not messagebox.askyesno("Clear?", "Delete cache file(s) and re-index everything?"): return
+
         try:
             if self.cache_file and os.path.exists(self.cache_file):
                 os.remove(self.cache_file)
                 safe_print("[CACHE] Deleted.")
         except: pass
-        
+
+        try:
+            if self.video_cache_file and os.path.exists(self.video_cache_file):
+                os.remove(self.video_cache_file)
+                safe_print("[VCACHE] Deleted.")
+        except: pass
+
         self.image_paths = []
         self.image_embeddings = None
+        self.video_paths = []
+        self.video_embeddings = None
+        self.video_cache_file = None
         self.clear_results()
         self.update_stats()
         self.start_indexing(mode="full")
@@ -1216,7 +1581,35 @@ class ImageSearchApp:
         if not self.folder:
             messagebox.showwarning("Warning", "Select a folder first.")
             return
+        # Chain video refresh after image refresh if video index is loaded
+        if self.video_paths or self.video_embeddings is not None:
+            self._pending_video_refresh = True
         self.start_indexing(mode="refresh")
+
+    def on_index_videos_click(self):
+        if not self.is_safe_to_act(action_callback=self.index_videos, action_name="index videos"):
+            return
+        self.cancel_search(clear_ui=True)
+        self.index_videos()
+
+    def index_videos(self):
+        if not self.folder:
+            messagebox.showwarning("Warning", "Select a folder first.")
+            return
+        if self.clip_model is None:
+            messagebox.showwarning("Wait", "Model is still loading...")
+            return
+        if not self.video_cache_file:
+            self.video_cache_file = os.path.join(self.folder, self.get_video_cache_filename())
+        if self.video_paths:
+            answer = messagebox.askyesno(
+                "Video Index",
+                f"Video index has {len(self.video_paths):,} frames.\n\nRefresh (add new videos only)?"
+            )
+            mode = "video_refresh" if answer else "video_full"
+        else:
+            mode = "video_full"
+        self.start_indexing(mode=mode)
 
     def parse_query(self, query):
         """
@@ -1247,7 +1640,9 @@ class ImageSearchApp:
         if self.is_searching or self.clip_model is None:
             safe_print("[SEARCH] Already searching or model not loaded")
             return
-        if self.image_embeddings is None or len(self.image_paths) == 0:
+        has_image_data = self.image_embeddings is not None and len(self.image_paths) > 0
+        has_video_data = self.video_embeddings is not None and len(self.video_paths) > 0
+        if not has_image_data and not has_video_data:
             messagebox.showwarning("No Data", "Index is empty. Please select a folder.")
             return
 
@@ -1311,52 +1706,67 @@ class ImageSearchApp:
                 return
 
             safe_print(f"[SEARCH] Computing similarities...")
-            sims = (self.image_embeddings @ text_embed.T).flatten()
 
-            # Subtract negative term similarities
+            # Encode negative terms if any
+            neg_embed = None
             if negative_terms:
                 neg_query = " ".join(negative_terms)
                 safe_print(f"[SEARCH] Encoding negative terms: '{neg_query}'")
                 neg_embed = self.clip_model.encode_text([neg_query])
                 if neg_embed is not None and neg_embed.size > 0:
-                    neg_sims = (self.image_embeddings @ neg_embed.T).flatten()
-                    sims = sims - neg_sims
                     safe_print(f"[SEARCH] Negative terms applied")
-            
-            if self.stop_search: 
+                else:
+                    neg_embed = None
+
+            if self.stop_search:
                 safe_print("[SEARCH] Cancelled after similarity computation")
                 return
-            
+
             if not self.is_indexing:
                 self.root.after(0, self.progress.stop)
                 self.root.after(0, lambda: self.progress.config(mode='determinate'))
-            
+
             min_score = self.score_var.get()
-            indices = np.where(sims >= min_score)[0]
-            
-            safe_print(f"[SEARCH] Found {len(indices)} results above threshold {min_score}")
-            
-            if len(indices) > 0:
-                scores = sims[indices]
-                sorted_idx = np.argsort(scores)[::-1]
+            show_images = self.show_images_var.get() if self.show_images_var else True
+            show_videos = self.show_videos_var.get() if self.show_videos_var else True
+            all_results = []
+
+            # Search image index
+            if show_images and self.image_embeddings is not None and len(self.image_paths) > 0:
+                sims_img = (self.image_embeddings @ text_embed.T).flatten()
+                if neg_embed is not None:
+                    sims_img = sims_img - (self.image_embeddings @ neg_embed.T).flatten()
+                for i, score in enumerate(sims_img):
+                    if score >= min_score:
+                        abs_path = os.path.join(self.folder, self.image_paths[i])
+                        all_results.append((float(score), abs_path, "image", {}))
+
+            # Search video index
+            if show_videos and self.video_embeddings is not None and len(self.video_paths) > 0:
+                sims_vid = (self.video_embeddings @ text_embed.T).flatten()
+                if neg_embed is not None:
+                    sims_vid = sims_vid - (self.video_embeddings @ neg_embed.T).flatten()
+                for i, score in enumerate(sims_vid):
+                    if score >= min_score:
+                        rel_vid_path, timestamp = self.video_paths[i]
+                        abs_vid_path = os.path.join(self.folder, rel_vid_path)
+                        all_results.append((float(score), abs_vid_path, "video", {"timestamp": timestamp}))
+
+            safe_print(f"[SEARCH] Found {len(all_results)} results above threshold {min_score}")
+
+            if all_results:
+                all_results.sort(key=lambda x: x[0], reverse=True)
                 max_res = min(self.top_n_var.get(), MAX_DISPLAY_RESULTS)
-                sorted_idx = sorted_idx[:max_res]
-                
-                # Convert relative paths to absolute for display
-                results = []
-                for i in sorted_idx:
-                    rel_path = self.image_paths[indices[i]]
-                    abs_path = os.path.join(self.folder, rel_path)
-                    results.append((scores[i], abs_path))
-                
-                self.total_found = len(indices)
-                
-                safe_print(f"[SEARCH] Displaying top {len(results)} results")
-                
+                all_results = all_results[:max_res]
+
+                self.total_found = len(all_results)
+
+                safe_print(f"[SEARCH] Displaying top {len(all_results)} results")
+
                 cw = max(self.canvas.winfo_width(), CELL_WIDTH)
                 self.render_cols = max(1, cw // CELL_WIDTH)
-                
-                self.start_thumbnail_loader(results, generation)
+
+                self.start_thumbnail_loader(all_results, generation)
             else:
                 safe_print("[SEARCH] No matches found")
                 if not self.is_indexing:
@@ -1409,26 +1819,32 @@ class ImageSearchApp:
             features = self.clip_model.encode_image_batch([img])
             emb = features[0]
             
-            sims = (self.image_embeddings @ emb).flatten()
-            
             min_score = self.score_var.get()
-            indices = np.where(sims >= min_score)[0]
-            
-            if len(indices) > 0:
-                scores = sims[indices]
-                sorted_idx = np.argsort(scores)[::-1]
+            show_images = self.show_images_var.get() if self.show_images_var else True
+            show_videos = self.show_videos_var.get() if self.show_videos_var else True
+            all_results = []
+
+            if show_images and self.image_embeddings is not None:
+                sims_img = (self.image_embeddings @ emb).flatten()
+                for i, score in enumerate(sims_img):
+                    if score >= min_score:
+                        abs_path = os.path.join(self.folder, self.image_paths[i])
+                        all_results.append((float(score), abs_path, "image", {}))
+
+            if show_videos and self.video_embeddings is not None:
+                sims_vid = (self.video_embeddings @ emb).flatten()
+                for i, score in enumerate(sims_vid):
+                    if score >= min_score:
+                        rel_vid_path, timestamp = self.video_paths[i]
+                        abs_vid_path = os.path.join(self.folder, rel_vid_path)
+                        all_results.append((float(score), abs_vid_path, "video", {"timestamp": timestamp}))
+
+            if all_results:
+                all_results.sort(key=lambda x: x[0], reverse=True)
                 max_res = min(self.top_n_var.get(), MAX_DISPLAY_RESULTS)
-                sorted_idx = sorted_idx[:max_res]
-                
-                # Convert relative paths to absolute for display
-                results = []
-                for i in sorted_idx:
-                    rel_path = self.image_paths[indices[i]]
-                    abs_path = os.path.join(self.folder, rel_path)
-                    results.append((scores[i], abs_path))
-                
-                self.total_found = len(indices)
-                self.start_thumbnail_loader(results, generation)
+                all_results = all_results[:max_res]
+                self.total_found = len(all_results)
+                self.start_thumbnail_loader(all_results, generation)
             else:
                 self.root.after(0, lambda: self.update_status("No matches", "green"))
                 self.is_searching = False
@@ -1446,18 +1862,45 @@ class ImageSearchApp:
     def load_thumbnails_worker(self, results, generation):
         loaded = 0
         failed = 0
-        for score, path in results:
-            if self.stop_search or generation != self.search_generation: 
+        for item in results:
+            score, path, result_type, metadata = item
+            if self.stop_search or generation != self.search_generation:
                 safe_print(f"[THUMBNAILS] Stopped (loaded {loaded}, failed {failed})")
                 break
             try:
-                img = Image.open(path)
-                # Handle palette images with transparency
-                if img.mode == 'P' and 'transparency' in img.info:
-                    img = img.convert("RGBA")
-                img.thumbnail(THUMBNAIL_SIZE)
-                img.load()
-                self.thumbnail_queue.put((score, path, img))
+                if result_type == "image":
+                    img = Image.open(path)
+                    if img.mode == 'P' and 'transparency' in img.info:
+                        img = img.convert("RGBA")
+                    img.thumbnail(THUMBNAIL_SIZE)
+                    img.load()
+                elif result_type == "video":
+                    try:
+                        import cv2
+                    except ImportError:
+                        failed += 1
+                        continue
+                    timestamp = metadata.get("timestamp", 0.0)
+                    cap = cv2.VideoCapture(path)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if fps <= 0:
+                        cap.release()
+                        failed += 1
+                        continue
+                    frame_number = int(timestamp * fps)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+                    ret, frame = cap.read()
+                    cap.release()
+                    if not ret:
+                        failed += 1
+                        continue
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    img = Image.fromarray(frame_rgb)
+                    img.thumbnail(THUMBNAIL_SIZE)
+                else:
+                    failed += 1
+                    continue
+                self.thumbnail_queue.put((score, path, img, result_type, metadata))
                 loaded += 1
             except Exception as e:
                 failed += 1
@@ -1473,7 +1916,8 @@ class ImageSearchApp:
         while not self.thumbnail_queue.empty():
             try:
                 item = self.thumbnail_queue.get_nowait()
-                self.add_result_thumbnail(*item)
+                score, path, img, result_type, metadata = item
+                self.add_result_thumbnail(score, path, img, result_type, metadata)
                 processed_this_cycle += 1
             except queue.Empty: break
             
@@ -1498,46 +1942,68 @@ class ImageSearchApp:
         
         self.root.after(10, lambda: self.check_thumbnail_queue(generation))
 
-    def add_result_thumbnail(self, score, path, pil_img):
+    def add_result_thumbnail(self, score, path, pil_img, result_type="image", metadata=None):
         if self.stop_search: return
-        
+        if metadata is None:
+            metadata = {}
+
+        # Unique cache key — video frames need per-frame uniqueness
+        if result_type == "video":
+            ts = metadata.get("timestamp", 0.0)
+            cache_key = f"{path}@{ts}"
+        else:
+            cache_key = path
+
         # Limit thumbnail cache size to prevent RAM overflow
         if len(self.thumbnail_images) > MAX_THUMBNAIL_CACHE:
             safe_print(f"[RAM] Thumbnail cache limit reached ({MAX_THUMBNAIL_CACHE}), clearing oldest...")
-            # Keep only the most recent thumbnails
             keys_to_remove = list(self.thumbnail_images.keys())[:-MAX_THUMBNAIL_CACHE//2]
             for key in keys_to_remove:
                 del self.thumbnail_images[key]
             gc.collect()
-        
+
         cols = max(1, getattr(self, "render_cols", 1))
         idx = len(self.results_frame.winfo_children())
         row, col = divmod(idx, cols)
-        
+
         f = tk.Frame(self.results_frame, bg=CARD_BG, bd=1, relief="solid")
         f.grid(row=row, column=col, padx=6, pady=6)
         f.configure(width=CELL_WIDTH, height=CELL_HEIGHT)
         f.pack_propagate(False)
-        f._image_path = path  # tag for UI removal lookup
-        
+        f._image_path = path  # always the file path (not timestamp) for Copy/Move/Delete
+
         try:
             photo = ImageTk.PhotoImage(pil_img)
-            self.thumbnail_images[path] = photo
-            
+            self.thumbnail_images[cache_key] = photo
+
+            # VIDEO badge
+            if result_type == "video":
+                tk.Label(f, text="VIDEO", bg=ORANGE, fg="#000000",
+                         font=("Segoe UI", 7, "bold"), padx=3, pady=1).pack(anchor="nw", padx=4, pady=(4, 0))
+
             lbl = tk.Label(f, image=photo, bg=CARD_BG)
             lbl.pack(pady=4)
-            
+
             lbl.bind("<Button-1>", lambda e: self.handle_single_click(path))
             lbl.bind("<Double-Button-1>", lambda e: self.handle_double_click(path))
-            
+
             var = tk.BooleanVar()
-            cb = tk.Checkbutton(f, text="Select", variable=var, bg=CARD_BG, fg=FG, 
+            cb = tk.Checkbutton(f, text="Select", variable=var, bg=CARD_BG, fg=FG,
                                 selectcolor=BG, command=lambda: self.toggle_selection(path, var.get()))
             cb.pack()
-            
+
             name = os.path.basename(path)
             if len(name) > 25: name = name[:22] + "..."
-            tk.Label(f, text=f"{score:.3f}\n{name}", bg=CARD_BG, fg=FG, 
+
+            if result_type == "video":
+                ts = metadata.get("timestamp", 0.0)
+                minutes = int(ts) // 60
+                seconds = int(ts) % 60
+                label_text = f"{score:.3f}\n{name}\nt={minutes}:{seconds:02d}"
+            else:
+                label_text = f"{score:.3f}\n{name}"
+
+            tk.Label(f, text=label_text, bg=CARD_BG, fg=FG,
                      font=("Segoe UI", 9), wraplength=180, justify="center").pack(pady=2)
         except:
             f.destroy()
@@ -1569,7 +2035,7 @@ class ImageSearchApp:
     def open_image_viewer(self, path):
         """Open image - path is already absolute from search results"""
         if os.path.exists(path):
-            if os.name == 'nt': 
+            if os.name == 'nt':
                 os.startfile(path)
             elif sys.platform == 'darwin':
                 subprocess.Popen(['open', path])
@@ -1639,8 +2105,18 @@ class ImageSearchApp:
                 self.image_embeddings = self.image_embeddings[keep_indices]
             else:
                 self.image_embeddings = None
-        self.update_stats()
         self._save_cache()
+
+        # Also prune video frames for any deleted video files
+        if self.video_paths and rel_to_remove:
+            keep_video = [i for i, (vp, _) in enumerate(self.video_paths) if vp not in rel_to_remove]
+            if len(keep_video) < len(self.video_paths):
+                if self.video_embeddings is not None:
+                    self.video_embeddings = self.video_embeddings[keep_video] if keep_video else None
+                self.video_paths = [self.video_paths[i] for i in keep_video]
+                self._save_video_cache()
+
+        self.update_stats()
 
     def _remove_cards_from_ui(self, abs_paths):
         paths_set = set(abs_paths)
@@ -1718,9 +2194,20 @@ class ImageSearchApp:
         self.status_label.config(text=text, foreground=color)
 
     def update_stats(self):
-        if self.image_embeddings is not None:
-            count = len(self.image_paths)
-            self.stats_label.config(text=f"{count:,} images indexed")
+        has_images = self.image_embeddings is not None and len(self.image_paths) > 0
+        has_videos = self.video_embeddings is not None and len(self.video_paths) > 0
+
+        if has_images and has_videos:
+            n_imgs = len(self.image_paths)
+            n_frames = len(self.video_paths)
+            n_vids = len(set(vp for vp, _ in self.video_paths))
+            self.stats_label.config(text=f"{n_imgs:,} images | {n_vids:,} videos ({n_frames:,} frames)")
+        elif has_images:
+            self.stats_label.config(text=f"{len(self.image_paths):,} images indexed")
+        elif has_videos:
+            n_frames = len(self.video_paths)
+            n_vids = len(set(vp for vp, _ in self.video_paths))
+            self.stats_label.config(text=f"{n_vids:,} videos ({n_frames:,} frames)")
         else:
             self.stats_label.config(text="")
 
@@ -1748,15 +2235,34 @@ class ImageSearchApp:
             except Exception:
                 pass
 
+        video_cache_str = self.video_cache_file if self.video_cache_file else "No video cache"
+        video_cache_size_str = "N/A"
+        if self.video_cache_file and os.path.exists(self.video_cache_file):
+            try:
+                size_bytes = os.path.getsize(self.video_cache_file)
+                if size_bytes >= 1024 ** 3:
+                    video_cache_size_str = f"{size_bytes / 1024**3:.2f} GB"
+                elif size_bytes >= 1024 ** 2:
+                    video_cache_size_str = f"{size_bytes / 1024**2:.2f} MB"
+                else:
+                    video_cache_size_str = f"{size_bytes / 1024:.1f} KB"
+            except Exception:
+                pass
+
         exclusions_str = ", ".join(sorted(self.excluded_folders)) if self.excluded_folders else "None"
         total_images = len(self.image_paths) if self.image_paths else 0
+        total_frames = len(self.video_paths) if self.video_paths else 0
+        total_videos = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
 
         info = (
             f"Folder:\n  {folder_str}\n\n"
-            f"Cache File:\n  {cache_str}\n\n"
+            f"Image Cache:\n  {cache_str}\n"
             f"Cache Size:  {cache_size_str}\n"
             f"Cache Modified:  {cache_mtime_str}\n\n"
             f"Images Indexed:  {total_images:,}\n\n"
+            f"Video Cache:\n  {video_cache_str}\n"
+            f"Video Cache Size:  {video_cache_size_str}\n\n"
+            f"Videos Indexed:  {total_videos:,} ({total_frames:,} frames)\n\n"
             f"Model:  {MODEL_NAME}\n"
             f"Pretrained:  {MODEL_PRETRAINED}\n\n"
             f"Exclusion Patterns:  {exclusions_str}"
