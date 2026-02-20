@@ -108,6 +108,8 @@ This app uses **OpenCLIP ViT-L-14** trained on LAION-2B dataset by OpenAI/LAION.
 ## 📝 Notes
 - First run will download the AI model (~1GB) automatically
 - After indexing your folder, results are cached for instant future searches
+- A cache file will be created in your image folder after indexing — 
+  keep it there for instant future searches, deleting it will require re-indexing
 - CPU mode works but is significantly slower
 
 ---
