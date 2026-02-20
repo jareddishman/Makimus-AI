@@ -18,6 +18,16 @@ Search your entire image library using **natural language or an image** — just
 
 ## 🚀 Installation
 
+**Windows — easy option:**
+
+Double click `Install.bat` to install and launch automatically
+
+Or double click `Run.bat` if already installed
+
+---
+
+### Manual Installation
+
 ### 1. Clone the repo
 ```bash
 git clone https://github.com/Ubaida-M-Yusuf/Makimus-AI.git
@@ -25,18 +35,26 @@ cd Makimus-AI
 ```
 
 ### 2. Create a virtual environment
+```bash
 python -m venv venv
+```
 
 ### 3. Activate the virtual environment
 
 **Windows (Git Bash):**
+```bash
 source venv/Scripts/activate
+```
 
-**Linux / macOS:**
+**Mac/Linux:**
+```bash
 source venv/bin/activate
+```
 
 ### 4. Install dependencies
+```bash
 pip install -r requirements.txt
+```
 
 > **Note:** requirements.txt installs PyTorch for CUDA 12.1+. 
 > If you have CUDA 11.8 or older, visit 
@@ -55,6 +73,7 @@ pip install -r requirements.txt
 
 python Makimus-AI.py
 
+Or double click `Run.bat`
 ---
 
 ## 📦 Dependencies
