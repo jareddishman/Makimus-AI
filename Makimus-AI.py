@@ -1,6 +1,9 @@
 import os
 import sys
 import pickle
+import json
+import shutil
+from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from threading import Thread
@@ -444,7 +447,8 @@ class ImageSearchApp:
         self.image_embeddings = None
         self.thumbnail_images = {}
         self.selected_images = set()
-        
+        self.excluded_folders = set()
+
         self.clip_model = None
         self.model_loading = False
         
@@ -484,6 +488,118 @@ class ImageSearchApp:
         pretrained_simple = "LAION2B" if "laion2b" in MODEL_PRETRAINED.lower() else MODEL_PRETRAINED.upper()
         cache_name = f".clip_cache_{MODEL_NAME}_{pretrained_simple}.pkl"
         return [cache_name]
+
+    def get_exclusions_path(self):
+        if not self.folder:
+            return None
+        return os.path.join(self.folder, ".clip_exclusions.json")
+
+    def _is_excluded(self, rel_path):
+        if not self.excluded_folders:
+            return False
+        normalized = rel_path.replace(os.sep, "/")
+        return any(pattern in normalized for pattern in self.excluded_folders)
+
+    def load_exclusions(self):
+        path = self.get_exclusions_path()
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.excluded_folders = set(data.get("excluded_patterns", []))
+                safe_print(f"[EXCLUSIONS] Loaded {len(self.excluded_folders)} pattern(s)")
+            except Exception as e:
+                safe_print(f"[EXCLUSIONS] Load error: {e}")
+                self.excluded_folders = set()
+        else:
+            self.excluded_folders = set()
+
+    def save_exclusions(self):
+        path = self.get_exclusions_path()
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"excluded_patterns": sorted(self.excluded_folders)}, f, indent=2)
+            safe_print(f"[EXCLUSIONS] Saved {len(self.excluded_folders)} pattern(s)")
+        except Exception as e:
+            safe_print(f"[EXCLUSIONS] Save error: {e}")
+
+    def open_exclusions_dialog(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Folder Exclusions")
+        dialog.geometry("480x380")
+        dialog.configure(bg=BG)
+        dialog.resizable(True, True)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text="Exclude images whose path contains any pattern below.\n"
+                 "Case-sensitive substring match (e.g. 'nsfw', 'temp', 'backup').\n"
+                 "Use forward slashes for folder separators (e.g. 'raw/originals').",
+            bg=BG, fg=FG, font=("Segoe UI", 9), justify="left", wraplength=450
+        ).pack(padx=12, pady=(10, 4), anchor="w")
+
+        list_frame = tk.Frame(dialog, bg=BG)
+        list_frame.pack(fill="both", expand=True, padx=12, pady=4)
+
+        scrollbar = tk.Scrollbar(list_frame, bg=PANEL_BG)
+        scrollbar.pack(side="right", fill="y")
+
+        listbox = tk.Listbox(
+            list_frame, bg=CARD_BG, fg=FG, selectbackground=ACCENT,
+            font=("Segoe UI", 10), yscrollcommand=scrollbar.set,
+            highlightthickness=0, relief="flat"
+        )
+        listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        for pattern in sorted(self.excluded_folders):
+            listbox.insert(tk.END, pattern)
+
+        entry_frame = tk.Frame(dialog, bg=BG)
+        entry_frame.pack(fill="x", padx=12, pady=4)
+
+        entry = tk.Entry(
+            entry_frame, bg=CARD_BG, fg=FG, insertbackground=FG,
+            font=("Segoe UI", 10), relief="flat",
+            highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        def add_pattern():
+            pat = entry.get().strip()
+            if not pat:
+                return
+            if pat not in self.excluded_folders:
+                self.excluded_folders.add(pat)
+                listbox.insert(tk.END, pat)
+                self.save_exclusions()
+            entry.delete(0, tk.END)
+
+        def remove_pattern():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            pat = listbox.get(sel[0])
+            self.excluded_folders.discard(pat)
+            listbox.delete(sel[0])
+            self.save_exclusions()
+
+        entry.bind("<Return>", lambda e: add_pattern())
+        ttk.Button(entry_frame, text="Add", command=add_pattern, width=8).pack(side="left")
+
+        btn_frame = tk.Frame(dialog, bg=BG)
+        btn_frame.pack(fill="x", padx=12, pady=(0, 4))
+        ttk.Button(btn_frame, text="Remove Selected", command=remove_pattern, width=16, style="Danger.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy, width=10).pack(side="left")
+
+        tk.Label(
+            dialog,
+            text="Note: Run Refresh after changing exclusions to apply them to the index.",
+            bg=BG, fg=ORANGE, font=("Segoe UI", 8, "italic")
+        ).pack(padx=12, pady=(0, 8), anchor="w")
 
     def load_model(self):
         self.model_loading = True
@@ -533,11 +649,15 @@ class ImageSearchApp:
         self.btn_stop.pack(side="left", padx=(20, 4))
         
         ttk.Button(top, text="EXIT", command=self.force_quit, width=12, style="Danger.TButton").pack(side="left", padx=6)
-        
+
+        ttk.Button(top, text="Exclusions", command=self.open_exclusions_dialog, width=12).pack(side="left", padx=6)
+
         self.status_label = ttk.Label(top, text="Starting...", width=35, anchor="w")
         self.status_label.pack(side="left", padx=10)
         self.stats_label = ttk.Label(top, text="")
         self.stats_label.pack(side="left")
+
+        ttk.Button(top, text="?", command=self.show_index_info, width=3).pack(side="right", padx=(4, 0))
 
         search_frame = ttk.Frame(self.root, padding=8)
         search_frame.pack(fill="x", padx=8, pady=4)
@@ -566,7 +686,9 @@ class ImageSearchApp:
                  variable=self.top_n_var, length=170, bg=PANEL_BG, fg=FG, troughcolor=BORDER, highlightthickness=0).pack(side="left")
         
         ttk.Button(ctrl_frame, text="Clear Results", command=self.on_clear_click, width=12).pack(side="left", padx=14)
-        ttk.Button(ctrl_frame, text="Export Selected", command=self.on_export_click, width=14).pack(side="left", padx=4)
+        ttk.Button(ctrl_frame, text="Copy", command=self.on_copy_click, width=8).pack(side="left", padx=4)
+        ttk.Button(ctrl_frame, text="Move", command=self.on_move_click, width=8, style="Accent.TButton").pack(side="left", padx=4)
+        ttk.Button(ctrl_frame, text="Delete", command=self.on_delete_click, width=8, style="Danger.TButton").pack(side="left", padx=4)
 
         self.progress = ttk.Progressbar(self.root, mode='determinate')
         self.progress.pack(fill="x", padx=10, pady=6)
@@ -646,8 +768,14 @@ class ImageSearchApp:
         self.clear_results()
         self.update_status("Results cleared", "green")
 
-    def on_export_click(self):
+    def on_copy_click(self):
         self.export_selected()
+
+    def on_move_click(self):
+        self.move_selected()
+
+    def on_delete_click(self):
+        self.delete_selected()
 
     def on_search_click(self):
         self.cancel_search(clear_ui=True)
@@ -719,6 +847,8 @@ class ImageSearchApp:
             return
         
         self.folder = folder
+        self.excluded_folders = set()
+        self.load_exclusions()
         safe_print(f"\n{'='*60}\n[FOLDER] {folder}")
         
         cache_files = self.get_cache_filename()
@@ -768,6 +898,7 @@ class ImageSearchApp:
             self.cache_file = cache_path
             self.folder = os.path.dirname(cache_path)
             
+            self.load_exclusions()
             self.update_stats()
             self.update_status(f"Loaded {len(self.image_paths):,} images", "green")
             safe_print(f"[CACHE] Success. {len(self.image_paths):,} images (relative paths).")
@@ -814,6 +945,8 @@ class ImageSearchApp:
                 if f.lower().endswith(IMAGE_EXTS):
                     abs_path = os.path.join(root, f)
                     rel_path = os.path.relpath(abs_path, self.folder)
+                    if self._is_excluded(rel_path):
+                        continue
                     current_disk_files.add(rel_path)
                     if rel_path not in self.image_paths:
                         new_files_to_add.append(abs_path)  # Pass absolute for processing
@@ -872,7 +1005,10 @@ class ImageSearchApp:
             if self.stop_indexing: break
             for f in files:
                 if f.lower().endswith(IMAGE_EXTS):
-                    all_images.append(os.path.join(root, f))
+                    abs_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(abs_path, self.folder)
+                    if not self._is_excluded(rel_path):
+                        all_images.append(abs_path)
         
         if not all_images:
             self.is_indexing = False
@@ -1382,6 +1518,7 @@ class ImageSearchApp:
         f.grid(row=row, column=col, padx=6, pady=6)
         f.configure(width=CELL_WIDTH, height=CELL_HEIGHT)
         f.pack_propagate(False)
+        f._image_path = path  # tag for UI removal lookup
         
         try:
             photo = ImageTk.PhotoImage(pil_img)
@@ -1473,15 +1610,109 @@ class ImageSearchApp:
             return
         export_dir = filedialog.askdirectory(title="Export to")
         if not export_dir: return
-        from shutil import copy2
         count = 0
         for path in self.selected_images:
             try:
-                copy2(path, export_dir)
+                shutil.copy2(path, export_dir)
                 count += 1
             except: pass
         messagebox.showinfo("Success", f"Exported {count} images")
         self.selected_images.clear()
+
+    def _remove_paths_from_index(self, abs_paths):
+        if not self.folder:
+            return
+        rel_to_remove = set()
+        for p in abs_paths:
+            try:
+                rel_to_remove.add(os.path.relpath(p, self.folder))
+            except ValueError:
+                pass  # different drive (Windows edge case)
+
+        if not rel_to_remove:
+            return
+
+        keep_indices = [i for i, rp in enumerate(self.image_paths) if rp not in rel_to_remove]
+        self.image_paths = [self.image_paths[i] for i in keep_indices]
+        if self.image_embeddings is not None:
+            if keep_indices:
+                self.image_embeddings = self.image_embeddings[keep_indices]
+            else:
+                self.image_embeddings = None
+        self.update_stats()
+        self._save_cache()
+
+    def _remove_cards_from_ui(self, abs_paths):
+        paths_set = set(abs_paths)
+        cards_to_destroy = []
+        for card in list(self.results_frame.winfo_children()):
+            card_path = getattr(card, '_image_path', None)
+            if card_path in paths_set:
+                cards_to_destroy.append(card)
+                if card_path in self.thumbnail_images:
+                    del self.thumbnail_images[card_path]
+
+        for card in cards_to_destroy:
+            card.destroy()
+
+        # Re-grid remaining cards to fill gaps
+        cols = max(1, getattr(self, 'render_cols', 1))
+        for idx, card in enumerate(list(self.results_frame.winfo_children())):
+            row, col = divmod(idx, cols)
+            card.grid(row=row, column=col)
+
+    def move_selected(self):
+        if not self.selected_images:
+            messagebox.showinfo("Info", "No images selected")
+            return
+        dest_dir = filedialog.askdirectory(title="Move selected images to...")
+        if not dest_dir:
+            return
+        moved = []
+        errors = []
+        for path in list(self.selected_images):
+            try:
+                shutil.move(path, dest_dir)
+                moved.append(path)
+            except Exception as e:
+                errors.append(f"{os.path.basename(path)}: {e}")
+        if moved:
+            self._remove_cards_from_ui(moved)
+            self._remove_paths_from_index(moved)
+        self.selected_images.clear()
+        msg = f"Moved {len(moved)} image(s)."
+        if errors:
+            msg += f"\n{len(errors)} error(s):\n" + "\n".join(errors[:5])
+        messagebox.showinfo("Move Complete", msg)
+        self.update_status(f"Moved {len(moved)} images", "green")
+
+    def delete_selected(self):
+        if not self.selected_images:
+            messagebox.showinfo("Info", "No images selected")
+            return
+        count = len(self.selected_images)
+        if not messagebox.askyesno(
+            "Confirm Delete",
+            f"Permanently delete {count} selected image(s)?\nThis cannot be undone."
+        ):
+            return
+        deleted = []
+        errors = []
+        for path in list(self.selected_images):
+            try:
+                os.remove(path)
+                deleted.append(path)
+            except Exception as e:
+                errors.append(f"{os.path.basename(path)}: {e}")
+        if deleted:
+            self._remove_cards_from_ui(deleted)
+            self._remove_paths_from_index(deleted)
+        self.selected_images.clear()
+        msg = f"Deleted {len(deleted)} image(s)."
+        if errors:
+            msg += f"\n{len(errors)} error(s):\n" + "\n".join(errors[:5])
+        messagebox.showinfo("Delete Complete", msg)
+        self.update_status(f"Deleted {len(deleted)} images", "green")
 
     def update_status(self, text, color="blue"):
         self.status_label.config(text=text, foreground=color)
@@ -1496,6 +1727,41 @@ class ImageSearchApp:
     def update_progress(self, value, text):
         self.progress['value'] = value
         self.progress_label.config(text=text)
+
+    def show_index_info(self):
+        folder_str = self.folder if self.folder else "No folder selected"
+        cache_str = self.cache_file if self.cache_file else "No cache loaded"
+
+        cache_size_str = "N/A"
+        cache_mtime_str = "N/A"
+        if self.cache_file and os.path.exists(self.cache_file):
+            try:
+                size_bytes = os.path.getsize(self.cache_file)
+                if size_bytes >= 1024 ** 3:
+                    cache_size_str = f"{size_bytes / 1024**3:.2f} GB"
+                elif size_bytes >= 1024 ** 2:
+                    cache_size_str = f"{size_bytes / 1024**2:.2f} MB"
+                else:
+                    cache_size_str = f"{size_bytes / 1024:.1f} KB"
+                mtime = os.path.getmtime(self.cache_file)
+                cache_mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+        exclusions_str = ", ".join(sorted(self.excluded_folders)) if self.excluded_folders else "None"
+        total_images = len(self.image_paths) if self.image_paths else 0
+
+        info = (
+            f"Folder:\n  {folder_str}\n\n"
+            f"Cache File:\n  {cache_str}\n\n"
+            f"Cache Size:  {cache_size_str}\n"
+            f"Cache Modified:  {cache_mtime_str}\n\n"
+            f"Images Indexed:  {total_images:,}\n\n"
+            f"Model:  {MODEL_NAME}\n"
+            f"Pretrained:  {MODEL_PRETRAINED}\n\n"
+            f"Exclusion Patterns:  {exclusions_str}"
+        )
+        messagebox.showinfo("Index Info", info)
 
 if __name__ == "__main__":
     print("=" * 60)
