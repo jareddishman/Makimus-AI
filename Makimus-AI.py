@@ -1082,19 +1082,44 @@ class ImageSearchApp:
             return
         self.start_indexing(mode="refresh")
 
+    def parse_query(self, query):
+        """
+        Parse a query string into positive and negative terms.
+        Supports: -word or -"multi word phrase" for exclusions.
+        Returns (positive_terms, negative_terms) as lists of strings.
+        """
+        positive_terms = []
+        negative_terms = []
+
+        # Match -"quoted phrase", -word, "quoted phrase", or plain word
+        pattern = r'(-?"[^"]+"|[-\w]+)'
+        tokens = re.findall(pattern, query)
+
+        for token in tokens:
+            if token.startswith('-'):
+                term = token[1:].strip('"')
+                if term:
+                    negative_terms.append(term)
+            else:
+                term = token.strip('"')
+                if term:
+                    positive_terms.append(term)
+
+        return positive_terms, negative_terms
+
     def do_search(self):
-        if self.is_searching or self.clip_model is None: 
+        if self.is_searching or self.clip_model is None:
             safe_print("[SEARCH] Already searching or model not loaded")
             return
         if self.image_embeddings is None or len(self.image_paths) == 0:
             messagebox.showwarning("No Data", "Index is empty. Please select a folder.")
             return
-        
+
         query = self.query_entry.get().strip()
-        if not query: 
+        if not query:
             safe_print("[SEARCH] Empty query")
             return
-        
+
         safe_print(f"\n[SEARCH] Starting search for: '{query}'")
         self.search_thread = Thread(target=lambda: self.search(query, self.search_generation + 1), daemon=True)
         self.search_thread.start()
@@ -1124,21 +1149,43 @@ class ImageSearchApp:
             self.root.after(0, self.progress.start)
             
         try:
+            positive_terms, negative_terms = self.parse_query(query)
+
+            if not positive_terms:
+                safe_print("[SEARCH] No positive search terms found")
+                self.root.after(0, lambda: self.update_status("No positive search terms", "orange"))
+                self.is_searching = False
+                return
+
+            safe_print(f"[SEARCH] Positive: {positive_terms}, Negative: {negative_terms}")
             safe_print(f"[SEARCH] Encoding query...")
-            text_embed = self.clip_model.encode_text([query])
-            
+
+            # Encode positive terms (average if multiple)
+            pos_query = " ".join(positive_terms)
+            text_embed = self.clip_model.encode_text([pos_query])
+
             if text_embed is None or text_embed.size == 0:
                 safe_print("[SEARCH ERROR] Text encoding returned empty array")
                 self.root.after(0, lambda: self.update_status("Search failed - text encoding error", "red"))
                 self.is_searching = False
                 return
-            
-            if self.stop_search or generation != self.search_generation: 
+
+            if self.stop_search or generation != self.search_generation:
                 safe_print("[SEARCH] Cancelled after text encoding")
                 return
-            
+
             safe_print(f"[SEARCH] Computing similarities...")
             sims = (self.image_embeddings @ text_embed.T).flatten()
+
+            # Subtract negative term similarities
+            if negative_terms:
+                neg_query = " ".join(negative_terms)
+                safe_print(f"[SEARCH] Encoding negative terms: '{neg_query}'")
+                neg_embed = self.clip_model.encode_text([neg_query])
+                if neg_embed is not None and neg_embed.size > 0:
+                    neg_sims = (self.image_embeddings @ neg_embed.T).flatten()
+                    sims = sims - neg_sims
+                    safe_print(f"[SEARCH] Negative terms applied")
             
             if self.stop_search: 
                 safe_print("[SEARCH] Cancelled after similarity computation")
